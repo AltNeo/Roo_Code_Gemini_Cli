@@ -84,6 +84,7 @@ export default defineConfig(({ mode }) => {
 	const plugins: PluginOption[] = [react(), tailwindcss(), persistPortPlugin(), wasmPlugin(), sourcemapPlugin()]
 
 	return {
+		base: "./",
 		plugins,
 		resolve: {
 			alias: {

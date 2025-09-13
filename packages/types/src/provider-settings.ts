@@ -13,6 +13,7 @@ import {
 	featherlessModels,
 	fireworksModels,
 	geminiModels,
+	geminiCliModels,
 	groqModels,
 	ioIntelligenceModels,
 	mistralModels,
@@ -479,7 +480,7 @@ export const getApiProtocol = (provider: ProviderName | undefined, modelId?: str
 }
 
 export const MODELS_BY_PROVIDER: Record<
-	Exclude<ProviderName, "fake-ai" | "human-relay" | "gemini-cli" | "lmstudio" | "openai" | "ollama">,
+	Exclude<ProviderName, "fake-ai" | "human-relay" | "lmstudio" | "openai" | "ollama">,
 	{ id: ProviderName; label: string; models: string[] }
 > = {
 	anthropic: {
@@ -523,6 +524,11 @@ export const MODELS_BY_PROVIDER: Record<
 		id: "gemini",
 		label: "Google Gemini",
 		models: Object.keys(geminiModels),
+	},
+	"gemini-cli": {
+		id: "gemini-cli",
+		label: "Google Gemini CLI",
+		models: Object.keys(geminiCliModels),
 	},
 	groq: { id: "groq", label: "Groq", models: Object.keys(groqModels) },
 	"io-intelligence": {

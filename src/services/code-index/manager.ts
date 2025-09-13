@@ -312,20 +312,18 @@ export class CodeIndexManager {
 			return
 		}
 
-		// Create .gitignore instance
+		// Create .gitignore instance (optional)
 		const ignorePath = path.join(workspacePath, ".gitignore")
 		try {
 			const content = await fs.readFile(ignorePath, "utf8")
 			ignoreInstance.add(content)
 			ignoreInstance.add(".gitignore")
 		} catch (error) {
-			// Should never happen: reading file failed even though it exists
-			console.error("Unexpected error loading .gitignore:", error)
-			TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-				error: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
-				location: "_recreateServices",
-			})
+			// .gitignore file doesn't exist - this is normal and not an error
+			// Only log if it's an unexpected error (not ENOENT)
+			if (error && typeof error === "object" && "code" in error && error.code !== "ENOENT") {
+				console.warn("Unexpected error loading .gitignore:", error)
+			}
 		}
 
 		// Create RooIgnoreController instance

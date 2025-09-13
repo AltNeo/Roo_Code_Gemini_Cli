@@ -1,16 +1,11 @@
 import * as vscode from "vscode"
-import * as dotenvx from "@dotenvx/dotenvx"
 import * as path from "path"
 
-// Load environment variables from .env file
-try {
-	// Specify path to .env file in the project root directory
-	const envPath = path.join(__dirname, "..", ".env")
-	dotenvx.config({ path: envPath })
-} catch (e) {
-	// Silently handle environment loading errors
-	console.warn("Failed to load environment variables:", e)
-}
+// Environment variables are optional - extension works without .env file
+// The following environment variables can be set if needed:
+// - POSTHOG_API_KEY: For telemetry (optional)
+// - ROO_CODE_CLOUD_TOKEN: For cloud features (optional)
+// - ROO_CODE_IPC_SOCKET_PATH: For IPC communication (optional)
 
 import type { CloudUserInfo, AuthState } from "@roo-code/types"
 import { CloudService, BridgeOrchestrator } from "@roo-code/cloud"
@@ -72,7 +67,12 @@ export async function activate(context: vscode.ExtensionContext) {
 	const telemetryService = TelemetryService.createInstance()
 
 	try {
-		telemetryService.register(new PostHogTelemetryClient())
+		// Only register PostHog if API key is available
+		if (process.env.POSTHOG_API_KEY && process.env.POSTHOG_API_KEY.trim() !== "") {
+			telemetryService.register(new PostHogTelemetryClient())
+		} else {
+			console.log("PostHog telemetry disabled - no API key provided")
+		}
 	} catch (error) {
 		console.warn("Failed to register PostHogTelemetryClient:", error)
 	}
