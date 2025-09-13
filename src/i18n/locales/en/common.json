@@ -92,6 +92,16 @@
 			"generate_complete_prompt": "Gemini completion error: {{error}}",
 			"sources": "Sources:"
 		},
+		"geminiCli": {
+			"oauthLoadFailed": "Failed to load OAuth credentials: {{error}}",
+			"tokenRefreshFailed": "Failed to refresh OAuth token: {{error}}",
+			"onboardingTimeout": "Onboarding process timed out",
+			"projectDiscoveryFailed": "Failed to discover project ID",
+			"rateLimitExceeded": "Gemini CLI rate limit exceeded",
+			"badRequest": "Gemini CLI bad request: {{details}}",
+			"apiError": "Gemini CLI API error: {{error}}",
+			"completionError": "Gemini CLI completion error: {{error}}"
+		},
 		"cerebras": {
 			"authenticationFailed": "Cerebras API authentication failed. Please check your API key is valid and not expired.",
 			"accessForbidden": "Cerebras API access forbidden. Your API key may not have access to the requested model or feature.",

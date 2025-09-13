@@ -1,88 +1,102 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { GeminiCliHandler } from "../gemini-cli"
 import { Anthropic } from "@anthropic-ai/sdk"
+import * as fs from "fs/promises"
 
-// Mock the @google/gemini-cli-core module
-vi.mock("@google/gemini-cli-core", () => ({
-	GeminiClient: vi.fn().mockImplementation(() => ({
-		initialize: vi.fn().mockResolvedValue(undefined),
-		startChat: vi.fn().mockResolvedValue(undefined),
-		addHistory: vi.fn().mockResolvedValue(undefined),
-		sendMessageStream: vi.fn().mockImplementation(async function* () {
-			yield { type: "content", value: "Test response" }
-			return {
-				getDebugResponses: vi.fn().mockReturnValue([
-					{
-						usageMetadata: {
-							promptTokenCount: 100,
-							candidatesTokenCount: 50,
-						},
-					},
-				]),
-			}
-		}),
-		generateContent: vi.fn().mockResolvedValue({
-			candidates: [
-				{
-					content: {
-						parts: [{ text: "Test completion response" }],
-					},
-				},
-			],
-		}),
-		getDebugResponses: vi.fn().mockReturnValue([
-			{
-				usageMetadata: {
-					promptTokenCount: 100,
-					candidatesTokenCount: 50,
-				},
+// Mock fs promises
+vi.mock("fs/promises", () => ({
+	readFile: vi.fn(),
+	writeFile: vi.fn(),
+}))
+
+// Mock google-auth-library
+vi.mock("google-auth-library", () => ({
+	OAuth2Client: vi.fn().mockImplementation(() => ({
+		setCredentials: vi.fn(),
+		refreshAccessToken: vi.fn().mockResolvedValue({
+			credentials: {
+				access_token: "new-access-token",
+				refresh_token: "refresh-token",
+				expiry_date: Date.now() + 3600 * 1000,
 			},
-		]),
-	})),
-	Config: vi.fn().mockImplementation(() => ({
-		initialize: vi.fn().mockResolvedValue(undefined),
-		getGeminiClient: vi.fn().mockReturnValue({
-			initialize: vi.fn().mockResolvedValue(undefined),
-			startChat: vi.fn().mockResolvedValue(undefined),
-			addHistory: vi.fn().mockResolvedValue(undefined),
-			sendMessageStream: vi.fn().mockImplementation(async function* () {
-				yield { type: "content", value: "Test response" }
+		}),
+		request: vi.fn().mockImplementation(({ url, data }) => {
+			if (url.includes("streamGenerateContent")) {
+				// Mock streaming response
 				return {
-					getDebugResponses: vi.fn().mockReturnValue([
-						{
-							usageMetadata: {
-								promptTokenCount: 100,
-								candidatesTokenCount: 50,
-							},
-						},
-					]),
+					data: mockSSEStream(),
 				}
-			}),
-			generateContent: vi.fn().mockResolvedValue({
-				candidates: [
-					{
-						content: {
-							parts: [{ text: "Test completion response" }],
-						},
+			} else if (url.includes("generateContent")) {
+				// Mock non-streaming response
+				return {
+					data: {
+						candidates: [
+							{
+								content: {
+									parts: [{ text: "Test completion response" }],
+								},
+							},
+						],
 					},
-				],
-			}),
+				}
+			} else if (url.includes("loadCodeAssist")) {
+				return {
+					data: {
+						cloudaicompanionProject: "test-project-id",
+					},
+				}
+			}
+			return { data: {} }
 		}),
 	})),
-	AuthType: {
-		LOGIN_WITH_GOOGLE: "oauth-personal",
+}))
+
+// Mock axios
+vi.mock("axios", () => ({
+	default: {
+		request: vi.fn(),
 	},
-	createContentGeneratorConfig: vi.fn().mockReturnValue({
-		model: "gemini-2.0-flash-001",
-		authType: "oauth-personal",
+}))
+
+// Mock the translation function
+vi.mock("../../i18n", () => ({
+	t: vi.fn((key: string, params?: any) => {
+		if (params) {
+			return `${key} with ${JSON.stringify(params)}`
+		}
+		return key
 	}),
 }))
+
+// Create a mock SSE stream
+function mockSSEStream() {
+	return {
+		[Symbol.asyncIterator]: async function* () {
+			yield Buffer.from('data: {"response":{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}}\n\n')
+			yield Buffer.from('data: {"response":{"candidates":[{"content":{"parts":[{"text":" world"}]}}]}}\n\n')
+			yield Buffer.from(
+				'data: {"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}}\n\n',
+			)
+		},
+	}
+}
 
 describe("GeminiCliHandler", () => {
 	let handler: GeminiCliHandler
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+
+		// Mock successful OAuth credential loading
+		;(fs.readFile as any).mockResolvedValue(
+			JSON.stringify({
+				access_token: "test-access-token",
+				refresh_token: "test-refresh-token",
+				token_type: "Bearer",
+				expiry_date: Date.now() + 3600 * 1000, // 1 hour from now
+			}),
+		)
+
 		handler = new GeminiCliHandler({})
 	})
 
@@ -115,6 +129,14 @@ describe("GeminiCliHandler", () => {
 			const model = customHandler.getModel()
 			expect(model.id).toBe("gemini-2.0-flash-001")
 		})
+
+		it("should handle thinking suffix in model ID", () => {
+			const customHandler = new GeminiCliHandler({
+				apiModelId: "gemini-1.5-flash-002:thinking",
+			})
+			const model = customHandler.getModel()
+			expect(model.id).toBe("gemini-1.5-flash-002")
+		})
 	})
 
 	describe("createMessage", () => {
@@ -134,64 +156,73 @@ describe("GeminiCliHandler", () => {
 				results.push(chunk)
 			}
 
-			// Should have at least text chunk
-			expect(results.length).toBeGreaterThanOrEqual(1)
-			expect(results[0]).toEqual({ type: "text", text: "Test response" })
+			// Should have text chunks and usage chunk
+			expect(results.length).toBeGreaterThanOrEqual(2)
 
-			// Usage chunk may or may not be present depending on mock
+			// Find text chunks
+			const textChunks = results.filter((r) => r.type === "text")
+			expect(textChunks.length).toBeGreaterThanOrEqual(1)
+			expect(textChunks[0]).toEqual({ type: "text", text: "Hello" })
+
+			// Should have usage chunk
 			const usageChunk = results.find((r) => r.type === "usage")
-			if (usageChunk) {
-				expect(usageChunk).toMatchObject({
-					type: "usage",
-					inputTokens: expect.any(Number),
-					outputTokens: expect.any(Number),
-				})
-			}
+			expect(usageChunk).toMatchObject({
+				type: "usage",
+				inputTokens: 10,
+				outputTokens: 5,
+				totalCost: expect.any(Number),
+			})
 		})
 
 		it("should handle reasoning/thought events", async () => {
-			// Mock a thought event
-			const mockClient = {
-				initialize: vi.fn().mockResolvedValue(undefined),
-				startChat: vi.fn().mockResolvedValue(undefined),
-				addHistory: vi.fn().mockResolvedValue(undefined),
-				sendMessageStream: vi.fn().mockImplementation(async function* () {
-					yield { type: "thought", value: { subject: "Analysis", description: "Thinking about the problem" } }
-					yield { type: "content", value: "Final answer" }
-					return {
-						getDebugResponses: vi.fn().mockReturnValue([]),
+			// Mock a stream with thinking parts
+			const mockOAuth = {
+				setCredentials: vi.fn(),
+				refreshAccessToken: vi.fn(),
+				request: vi.fn().mockImplementation(({ url }) => {
+					if (url.includes("loadCodeAssist")) {
+						return Promise.resolve({
+							data: {
+								cloudaicompanionProject: "test-project-id",
+							},
+						})
+					} else if (url.includes("streamGenerateContent")) {
+						return Promise.resolve({
+							data: {
+								[Symbol.asyncIterator]: async function* () {
+									yield Buffer.from(
+										'data: {"response":{"candidates":[{"content":{"parts":[{"text":"Let me think...","thought":true}]}}]}}\n\n',
+									)
+									yield Buffer.from(
+										'data: {"response":{"candidates":[{"content":{"parts":[{"text":"Final answer"}]}}]}}\n\n',
+									)
+									yield Buffer.from(
+										'data: {"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}}\n\n',
+									)
+								},
+							},
+						})
 					}
+					return Promise.resolve({ data: {} })
 				}),
 			}
 
-			const { Config } = await import("@google/gemini-cli-core")
-			;(Config as any).mockImplementation(() => ({
-				initialize: vi.fn().mockResolvedValue(undefined),
-				getGeminiClient: vi.fn().mockReturnValue(mockClient),
-			}))
+			// Override the OAuth client for this test
+			;(handler as any).authClient = mockOAuth
 
-			const customHandler = new GeminiCliHandler({})
-			const stream = customHandler.createMessage("System", [{ role: "user", content: "Test" }])
+			const stream = handler.createMessage("System", [{ role: "user", content: "Test" }])
 			const results = []
 
 			for await (const chunk of stream) {
 				results.push(chunk)
 			}
 
-			expect(results[0]).toEqual({ type: "reasoning", text: "Analysis: Thinking about the problem" })
+			expect(results[0]).toEqual({ type: "reasoning", text: "Let me think..." })
 			expect(results[1]).toEqual({ type: "text", text: "Final answer" })
 		})
 
-		it("should handle authentication errors", async () => {
-			const mockClient = {
-				initialize: vi.fn().mockRejectedValue(new Error("OAuth authentication failed")),
-			}
-
-			const { Config } = await import("@google/gemini-cli-core")
-			;(Config as any).mockImplementation(() => ({
-				initialize: vi.fn().mockResolvedValue(undefined),
-				getGeminiClient: vi.fn().mockReturnValue(mockClient),
-			}))
+		it("should handle OAuth credential loading errors", async () => {
+			;(fs.readFile as any).mockRejectedValue(new Error("File not found"))
 
 			const customHandler = new GeminiCliHandler({})
 			const stream = customHandler.createMessage("System", [{ role: "user", content: "Test" }])
@@ -200,54 +231,74 @@ describe("GeminiCliHandler", () => {
 				for await (const _ of stream) {
 					// Should throw before yielding anything
 				}
-			}).rejects.toThrow(/auth/)
+			}).rejects.toThrow()
 		})
 	})
 
 	describe("completePrompt", () => {
 		it("should complete a prompt", async () => {
-			// Need to mock the initialized client properly
-			const mockClient = {
-				initialize: vi.fn().mockResolvedValue(undefined),
-				generateContent: vi.fn().mockResolvedValue({
-					candidates: [
-						{
-							content: {
-								parts: [{ text: "Test completion response" }],
-							},
-						},
-					],
-				}),
-			}
-
-			const { Config } = await import("@google/gemini-cli-core")
-			;(Config as any).mockImplementation(() => ({
-				initialize: vi.fn().mockResolvedValue(undefined),
-				getGeminiClient: vi.fn().mockReturnValue(mockClient),
-			}))
-
-			const customHandler = new GeminiCliHandler({})
-			const result = await customHandler.completePrompt("What is 2 + 2?")
+			const result = await handler.completePrompt("What is 2 + 2?")
 			expect(result).toBe("Test completion response")
 		})
 
 		it("should handle empty response", async () => {
-			const mockClient = {
-				initialize: vi.fn().mockResolvedValue(undefined),
-				generateContent: vi.fn().mockResolvedValue({
-					candidates: [],
+			const mockOAuth = {
+				setCredentials: vi.fn(),
+				refreshAccessToken: vi.fn(),
+				request: vi.fn().mockImplementation(({ url }) => {
+					if (url.includes("loadCodeAssist")) {
+						return {
+							data: {
+								cloudaicompanionProject: "test-project-id",
+							},
+						}
+					}
+					return {
+						data: {
+							candidates: [],
+						},
+					}
 				}),
 			}
 
-			const { Config } = await import("@google/gemini-cli-core")
-			;(Config as any).mockImplementation(() => ({
-				initialize: vi.fn().mockResolvedValue(undefined),
-				getGeminiClient: vi.fn().mockReturnValue(mockClient),
-			}))
+			// Override the OAuth client for this test
+			;(handler as any).authClient = mockOAuth
 
-			const customHandler = new GeminiCliHandler({})
-			const result = await customHandler.completePrompt("Test")
+			const result = await handler.completePrompt("Test")
 			expect(result).toBe("")
+		})
+
+		it("should filter out thought parts from completion", async () => {
+			const mockOAuth = {
+				setCredentials: vi.fn(),
+				refreshAccessToken: vi.fn(),
+				request: vi.fn().mockImplementation(({ url }) => {
+					if (url.includes("loadCodeAssist")) {
+						return {
+							data: {
+								cloudaicompanionProject: "test-project-id",
+							},
+						}
+					}
+					return {
+						data: {
+							candidates: [
+								{
+									content: {
+										parts: [{ text: "Thinking...", thought: true }, { text: "The answer is 4" }],
+									},
+								},
+							],
+						},
+					}
+				}),
+			}
+
+			// Override the OAuth client for this test
+			;(handler as any).authClient = mockOAuth
+
+			const result = await handler.completePrompt("What is 2 + 2?")
+			expect(result).toBe("The answer is 4")
 		})
 	})
 
@@ -263,6 +314,43 @@ describe("GeminiCliHandler", () => {
 			// The implementation falls back to the base class
 			const count = await handler.countTokens(content)
 			expect(count).toBeGreaterThan(0)
+		})
+	})
+
+	describe("OAuth token refresh", () => {
+		it("should refresh expired tokens", async () => {
+			// Mock expired credentials
+			;(fs.readFile as any).mockResolvedValue(
+				JSON.stringify({
+					access_token: "expired-token",
+					refresh_token: "test-refresh-token",
+					token_type: "Bearer",
+					expiry_date: Date.now() - 1000, // Expired 1 second ago
+				}),
+			)
+
+			const customHandler = new GeminiCliHandler({})
+			const result = await customHandler.completePrompt("Test")
+
+			// Should still work after token refresh
+			expect(result).toBe("Test completion response")
+		})
+	})
+
+	describe("project discovery", () => {
+		it("should use provided project ID", async () => {
+			const customHandler = new GeminiCliHandler({
+				geminiCliProjectId: "custom-project-id",
+			})
+
+			const result = await customHandler.completePrompt("Test")
+			expect(result).toBe("Test completion response")
+		})
+
+		it("should discover project ID from API", async () => {
+			// The default mock already handles project discovery
+			const result = await handler.completePrompt("Test")
+			expect(result).toBe("Test completion response")
 		})
 	})
 })
